@@ -1,6 +1,42 @@
 <template>
   <div style="flex:1;height:100%;position:relative">
     <div id="map" style="width:100%;height:100%"></div>
+    <button class="marker-batch-toggle" :class="{ active: store.isDeviceMultiSelectMode }"
+      @click="toggleMultiSelectMode">
+      {{ store.isDeviceMultiSelectMode ? '退出多选' : '多选标记' }}
+    </button>
+    <div v-if="store.isDeviceMultiSelectMode" class="marker-batch-bar">
+      <div class="marker-batch-title">
+        <strong>已选 {{ store.selectedDeviceCount }} 个标记</strong>
+        <span>缩放或移动地图后选择不会丢失</span>
+      </div>
+      <div class="marker-batch-actions">
+        <button @click="store.selectAllDevices()">全选</button>
+        <button @click="store.clearSelectedDevices()" :disabled="store.selectedDeviceCount === 0">取消选择</button>
+        <button @click="showSelectedDevices" :disabled="store.selectedDeviceCount === 0">批量显示</button>
+        <button @click="hideSelectedDevices" :disabled="store.selectedDeviceCount === 0">批量隐藏</button>
+        <span class="marker-batch-divider"></span>
+        <select v-model="batchGroupId">
+          <option value="">未分组</option>
+          <option v-for="group in store.groups" :key="group.id" :value="group.id">{{ group.name }}</option>
+        </select>
+        <button @click="applySelectedGroup" :disabled="store.selectedDeviceCount === 0">调整分组</button>
+      </div>
+      <div v-if="store.lastDeviceBatchResult" class="marker-batch-result">
+        <div>
+          批量{{ store.lastDeviceBatchResult.action === 'visibility' ? '显隐' : '分组' }}完成：
+          <b class="success-text">成功 {{ store.lastDeviceBatchResult.succeeded }}</b>
+          <span v-if="store.lastDeviceBatchResult.failed > 0">，</span>
+          <b v-if="store.lastDeviceBatchResult.failed > 0" class="failure-text">失败 {{ store.lastDeviceBatchResult.failed }}</b>
+          <span>（共请求 {{ store.lastDeviceBatchResult.requested }} 项，成功项未回滚）</span>
+        </div>
+        <ul v-if="store.lastDeviceBatchResult.failures.length > 0">
+          <li v-for="failure in store.lastDeviceBatchResult.failures" :key="failure.deviceId">
+            {{ failure.message }}
+          </li>
+        </ul>
+      </div>
+    </div>
     <div v-if="store.editMode !== 'none'" :style="{ position:'absolute', top:'12px', left:'50%', transform:'translateX(-50%)',
       padding:'8px 16px', background:'#1976d2', color:'#fff', borderRadius:'20px', fontSize:'12px', zIndex:1000, boxShadow:'0 2px 8px rgba(0,0,0,0.2)' }">
       {{ modeHint }}
@@ -32,6 +68,7 @@ const stayPointMarkers = ref<any[]>([]);
 const breachEventMarkers = ref<any[]>([]);
 const playbackMarker = ref<any>(null);
 const playbackTrailLayers = ref<any[]>([]);
+const batchGroupId = ref('');
 
 const drawingTempCircle = ref<any>(null);
 const drawingTempPolygon = ref<any>(null);
@@ -561,12 +598,14 @@ function renderAllFences() {
 }
 
 function renderAllDevices() {
-  deviceLayers.value.forEach(d => map.value!.removeLayer(d));
+  deviceLayers.value.forEach(layer => map.value!.removeLayer(layer));
   deviceLayers.value.clear();
 
-  store.devices.forEach(d => {
+  store.visibleDevices.forEach(d => {
     const isHighlighted = store.highlightedDeviceId === d.id;
-    const color = d.status === 'online' ? '#4caf50' : d.status === 'alert' ? '#e53935' : '#9e9e9e';
+    const isSelected = store.selectedDeviceIds.includes(d.id);
+    const group = d.groupId ? store.getGroupById(d.groupId) : null;
+    const color = group?.color || (d.status === 'online' ? '#4caf50' : d.status === 'alert' ? '#e53935' : '#9e9e9e');
     const baseRadius = 8;
     const radius = isHighlighted ? baseRadius + 6 : baseRadius;
     const weight = isHighlighted ? 4 : 2;
@@ -574,7 +613,7 @@ function renderAllDevices() {
     if (isHighlighted) {
       const pulseMarker = L.circleMarker([d.lat, d.lng], {
         radius: radius + 8,
-        color: color,
+        color,
         fillColor: color,
         fillOpacity: 0.2,
         weight: 2,
@@ -583,17 +622,51 @@ function renderAllDevices() {
       deviceLayers.value.set(d.id + '-pulse', pulseMarker);
     }
 
+    if (isSelected) {
+      const selectionRing = L.circleMarker([d.lat, d.lng], {
+        radius: radius + 7,
+        color: '#1976d2',
+        fillColor: '#1976d2',
+        fillOpacity: 0.08,
+        weight: 2,
+        dashArray: '4,3'
+      }).addTo(map.value!);
+      deviceLayers.value.set(d.id + '-selection', selectionRing);
+    }
+
     const marker = L.circleMarker([d.lat, d.lng], {
       radius,
       color,
       fillColor: color,
       fillOpacity: isHighlighted ? 1 : 0.8,
       weight
-    })
-      .addTo(map.value!)
-      .bindPopup(`<b>${d.name}</b><br>状态: ${d.status === 'online' ? '在线' : d.status === 'alert' ? '告警' : '离线'}<br>电量: ${d.battery}%<br>温度: ${d.temperature}°C`);
+    });
 
-    if (isHighlighted) {
+    if (!store.isDeviceMultiSelectMode) {
+      const groupText = group ? `<br>分组: ${group.name}` : '<br>分组: 未分组';
+      const permissionText = d.canManage === false ? '<br><span style="color:#e65100">无编辑权限</span>' : '';
+      marker.bindPopup(`<b>${d.name}</b><br>状态: ${d.status === 'online' ? '在线' : d.status === 'alert' ? '告警' : '离线'}<br>电量: ${d.battery}%<br>温度: ${d.temperature}°C${groupText}${permissionText}`);
+    }
+
+    marker.on('click', (event: LeafletMouseEvent) => {
+      const isMultiSelectGesture = store.isDeviceMultiSelectMode || event.originalEvent.ctrlKey || event.originalEvent.metaKey || event.originalEvent.shiftKey;
+
+      if (isMultiSelectGesture) {
+        if (!store.isDeviceMultiSelectMode) {
+          store.setDeviceMultiSelectMode(true);
+        }
+        L.DomEvent.stopPropagation(event);
+        map.value!.closePopup();
+        store.toggleDeviceSelection(d.id);
+        return;
+      }
+
+      store.setHighlightedDevice(d.id);
+    });
+
+    marker.addTo(map.value!);
+
+    if (isHighlighted && !store.isDeviceMultiSelectMode) {
       marker.openPopup();
     }
 
@@ -606,6 +679,22 @@ function panToDevice(deviceId: string) {
   if (device && map.value) {
     map.value.panTo([device.lat, device.lng], { animate: true, duration: 0.5 });
   }
+}
+
+function toggleMultiSelectMode() {
+  store.setDeviceMultiSelectMode(!store.isDeviceMultiSelectMode);
+}
+
+function showSelectedDevices() {
+  store.batchSetDevicesVisible(store.selectedDeviceIds, true);
+}
+
+function hideSelectedDevices() {
+  store.batchSetDevicesVisible(store.selectedDeviceIds, false);
+}
+
+function applySelectedGroup() {
+  store.batchSetDeviceGroup(store.selectedDeviceIds, batchGroupId.value || null);
 }
 
 function clearAllTrackLayers() {
@@ -836,6 +925,14 @@ watch(() => store.devices, () => {
   renderAllDevices();
 }, { deep: true });
 
+watch(() => store.isDeviceMultiSelectMode, () => {
+  renderAllDevices();
+});
+
+watch(() => store.selectedDeviceIds, () => {
+  renderAllDevices();
+}, { deep: true });
+
 watch(() => store.highlightedDeviceId, (newId, oldId) => {
   renderAllDevices();
   if (newId && newId !== oldId) {
@@ -919,3 +1016,112 @@ onUnmounted(() => {
   }
 });
 </script>
+
+<style scoped>
+.marker-batch-toggle {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  z-index: 1000;
+  padding: 8px 14px;
+  border: 1px solid #1976d2;
+  border-radius: 18px;
+  background: #fff;
+  color: #1976d2;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.18);
+}
+
+.marker-batch-toggle.active {
+  background: #1976d2;
+  color: #fff;
+}
+
+.marker-batch-bar {
+  position: absolute;
+  left: 50%;
+  bottom: 18px;
+  transform: translateX(-50%);
+  z-index: 1000;
+  min-width: 520px;
+  max-width: calc(100% - 160px);
+  padding: 10px 14px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.22);
+  color: #333;
+  font-size: 12px;
+}
+
+.marker-batch-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.marker-batch-title span {
+  color: #777;
+  font-size: 11px;
+}
+
+.marker-batch-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.marker-batch-actions button,
+.marker-batch-actions select {
+  padding: 6px 10px;
+  border: 1px solid #cfd8dc;
+  border-radius: 6px;
+  background: #fff;
+  color: #333;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.marker-batch-actions button:disabled {
+  background: #f5f5f5;
+  color: #aaa;
+  cursor: not-allowed;
+}
+
+.marker-batch-actions button:not(:disabled):hover {
+  border-color: #1976d2;
+  color: #1976d2;
+}
+
+.marker-batch-divider {
+  width: 1px;
+  height: 22px;
+  background: #ddd;
+  margin: 0 4px;
+}
+
+.marker-batch-result {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid #eee;
+  line-height: 1.6;
+}
+
+.marker-batch-result ul {
+  margin: 4px 0 0;
+  padding-left: 18px;
+  color: #c62828;
+}
+
+.success-text {
+  color: #2e7d32;
+}
+
+.failure-text {
+  color: #c62828;
+}
+</style>

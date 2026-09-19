@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia';
 import { ref, computed } from 'vue';
-import type { Device, Geofence, Alert, AlertType, AlertSeverity, DeviceGroup, DeviceThresholds, TrackData, TrackPoint, StayPoint, TrackSegment, HealthDataPoint, DeviceHealth, HealthSummary } from '../types';
+import type { Device, Geofence, Alert, AlertType, AlertSeverity, DeviceGroup, DeviceThresholds, TrackData, TrackPoint, StayPoint, TrackSegment, HealthDataPoint, DeviceHealth, HealthSummary, DeviceBatchAction, DeviceBatchFailure, DeviceBatchResult } from '../types';
 
 function generateId(prefix: string) {
   return prefix + Date.now() + Math.random().toString(36).slice(2, 6);
@@ -8,11 +8,12 @@ function generateId(prefix: string) {
 
 export const useIotStore = defineStore('iot', () => {
   const devices = ref<Device[]>([
-    { id: 'd1', name: '传感器-A01', lat: 39.9042, lng: 116.4074, status: 'online', lastSeen: new Date().toISOString(), battery: 85, temperature: 24.5 },
-    { id: 'd2', name: '传感器-B02', lat: 39.9142, lng: 116.3974, status: 'alert', lastSeen: new Date().toISOString(), battery: 12, temperature: 38.2 },
-    { id: 'd3', name: '追踪器-C03', lat: 39.8942, lng: 116.4174, status: 'offline', lastSeen: new Date(Date.now() - 3600000).toISOString(), battery: 0, temperature: 0 },
-    { id: 'd4', name: '传感器-D04', lat: 39.9082, lng: 116.4024, status: 'online', lastSeen: new Date().toISOString(), battery: 45, temperature: 26.1 },
-    { id: 'd5', name: '追踪器-E05', lat: 39.8992, lng: 116.4104, status: 'online', lastSeen: new Date().toISOString(), battery: 92, temperature: 23.8 },
+    { id: 'd1', name: '传感器-A01', lat: 39.9042, lng: 116.4074, status: 'online', lastSeen: new Date().toISOString(), battery: 85, temperature: 24.5, groupId: 'g1', visible: true, canManage: true },
+    { id: 'd2', name: '传感器-B02', lat: 39.9142, lng: 116.3974, status: 'alert', lastSeen: new Date().toISOString(), battery: 12, temperature: 38.2, groupId: 'g2', visible: true, canManage: true },
+    { id: 'd3', name: '追踪器-C03', lat: 39.8942, lng: 116.4174, status: 'offline', lastSeen: new Date(Date.now() - 3600000).toISOString(), battery: 0, temperature: 0, groupId: 'g3', visible: true, canManage: false },
+    { id: 'd4', name: '传感器-D04', lat: 39.9082, lng: 116.4024, status: 'online', lastSeen: new Date().toISOString(), battery: 45, temperature: 26.1, groupId: 'g1', visible: true, canManage: true },
+    { id: 'd5', name: '追踪器-E05', lat: 39.8992, lng: 116.4104, status: 'online', lastSeen: new Date().toISOString(), battery: 92, temperature: 23.8, groupId: 'g4', visible: true, canManage: true },
+    { id: 'd6', name: '已移除设备-F06', lat: 39.9022, lng: 116.4064, status: 'offline', lastSeen: new Date(Date.now() - 86400000).toISOString(), battery: 0, temperature: 0, groupId: 'g4', visible: true, canManage: false, isDeleted: true },
   ]);
   const fences = ref<Geofence[]>([
     { id: 'f1', name: '办公区域', center: { lat: 39.9042, lng: 116.4074 }, radius: 500, type: 'circle', alertOnEnter: false, alertOnExit: true, color: '#4caf50' },
@@ -60,6 +61,9 @@ export const useIotStore = defineStore('iot', () => {
   const highlightedDeviceId = ref<string | null>(null);
   const isRegisteringDevice = ref(false);
   const registrationLocation = ref<{ lat: number; lng: number } | null>(null);
+  const isDeviceMultiSelectMode = ref(false);
+  const selectedDeviceIds = ref<string[]>([]);
+  const lastDeviceBatchResult = ref<DeviceBatchResult | null>(null);
 
   const trackPlaybackEnabled = ref(false);
   const trackData = ref<TrackData | null>(null);
@@ -81,30 +85,33 @@ export const useIotStore = defineStore('iot', () => {
     { id: 'g4', name: '室外设施', color: '#7b1fa2', description: '户外设备' },
   ]);
 
-  const onlineCount = computed(() => devices.value.filter(d => d.status === 'online').length);
-  const offlineCount = computed(() => devices.value.filter(d => d.status === 'offline').length);
-  const alertDeviceCount = computed(() => devices.value.filter(d => d.status === 'alert').length);
-  const deviceCount = computed(() => devices.value.length);
+  const availableDevices = computed(() => devices.value.filter(d => !d.isDeleted));
+  const visibleDevices = computed(() => availableDevices.value.filter(d => d.visible !== false));
+  const onlineCount = computed(() => availableDevices.value.filter(d => d.status === 'online').length);
+  const offlineCount = computed(() => availableDevices.value.filter(d => d.status === 'offline').length);
+  const alertDeviceCount = computed(() => availableDevices.value.filter(d => d.status === 'alert').length);
+  const deviceCount = computed(() => availableDevices.value.length);
+  const selectedDeviceCount = computed(() => selectedDeviceIds.value.length);
   const fenceCount = computed(() => fences.value.length);
   const alertCount = computed(() => alerts.value.filter(a => !a.acknowledged).length);
   const selectedFence = computed(() => fences.value.find(f => f.id === selectedFenceId.value) || null);
 
   const avgBattery = computed(() => {
-    const onlineDevices = devices.value.filter(d => d.status !== 'offline');
+    const onlineDevices = availableDevices.value.filter(d => d.status !== 'offline');
     if (onlineDevices.length === 0) return 0;
     return Math.round(onlineDevices.reduce((sum, d) => sum + d.battery, 0) / onlineDevices.length);
   });
 
   const avgTemperature = computed(() => {
-    const onlineDevices = devices.value.filter(d => d.status !== 'offline');
+    const onlineDevices = availableDevices.value.filter(d => d.status !== 'offline');
     if (onlineDevices.length === 0) return 0;
     return Number((onlineDevices.reduce((sum, d) => sum + d.temperature, 0) / onlineDevices.length).toFixed(1));
   });
 
-  const lowBatteryCount = computed(() => devices.value.filter(d => d.battery < 20 && d.status !== 'offline').length);
+  const lowBatteryCount = computed(() => availableDevices.value.filter(d => d.battery < 20 && d.status !== 'offline').length);
 
   const devicesRanked = computed(() => {
-    return [...devices.value].sort((a, b) => {
+    return [...availableDevices.value].sort((a, b) => {
       const statusOrder = { alert: 0, offline: 1, online: 2 };
       const statusDiff = statusOrder[a.status] - statusOrder[b.status];
       if (statusDiff !== 0) return statusDiff;
@@ -174,6 +181,102 @@ export const useIotStore = defineStore('iot', () => {
     highlightedDeviceId.value = id;
   }
 
+  function setDeviceMultiSelectMode(active: boolean) {
+    isDeviceMultiSelectMode.value = active;
+    if (!active) {
+      clearSelectedDevices();
+    }
+  }
+
+  function pruneSelectedDevices() {
+    const selectableIds = new Set(availableDevices.value.map(d => d.id));
+    selectedDeviceIds.value = selectedDeviceIds.value.filter(id => selectableIds.has(id));
+  }
+
+  function toggleDeviceSelection(id: string) {
+    const device = availableDevices.value.find(d => d.id === id);
+    if (!device) return;
+
+    if (selectedDeviceIds.value.includes(id)) {
+      selectedDeviceIds.value = selectedDeviceIds.value.filter(selectedId => selectedId !== id);
+    } else {
+      selectedDeviceIds.value = [...selectedDeviceIds.value, id];
+    }
+  }
+
+  function selectAllDevices() {
+    selectedDeviceIds.value = availableDevices.value.map(d => d.id);
+  }
+
+  function clearSelectedDevices() {
+    selectedDeviceIds.value = [];
+    lastDeviceBatchResult.value = null;
+  }
+
+  function applyDeviceBatchUpdates(ids: string[], updates: { visible?: boolean; groupId?: string | null }, action: DeviceBatchAction): DeviceBatchResult {
+    const uniqueIds = [...new Set(ids)];
+    const failures: DeviceBatchFailure[] = [];
+    let succeeded = 0;
+
+    uniqueIds.forEach(id => {
+      const device = devices.value.find(d => d.id === id);
+
+      if (!device || device.isDeleted) {
+        failures.push({
+          deviceId: id,
+          deviceName: device?.name,
+          reason: 'deleted',
+          message: device?.name ? `${device.name} 已被删除` : '标记不存在或已被删除'
+        });
+        return;
+      }
+
+      if (device.canManage === false) {
+        failures.push({
+          deviceId: id,
+          deviceName: device.name,
+          reason: 'forbidden',
+          message: `${device.name} 无操作权限`
+        });
+        return;
+      }
+
+      if (updates.visible !== undefined) {
+        device.visible = updates.visible;
+      }
+      if (updates.groupId !== undefined) {
+        device.groupId = updates.groupId ?? undefined;
+      }
+      succeeded += 1;
+    });
+
+    if (failures.some(failure => failure.reason === 'deleted')) {
+      pruneSelectedDevices();
+    }
+
+    const result: DeviceBatchResult = {
+      action,
+      requested: uniqueIds.length,
+      succeeded,
+      failed: failures.length,
+      failures
+    };
+    lastDeviceBatchResult.value = result;
+    return result;
+  }
+
+  function batchSetDevicesVisible(ids: string[], visible: boolean) {
+    return applyDeviceBatchUpdates(ids, { visible }, 'visibility');
+  }
+
+  function batchSetDeviceGroup(ids: string[], groupId: string | null) {
+    return applyDeviceBatchUpdates(ids, { groupId }, 'group');
+  }
+
+  function clearDeviceBatchResult() {
+    lastDeviceBatchResult.value = null;
+  }
+
   function addAlert(alert: Omit<Alert, 'id' | 'acknowledged'>) {
     const newAlert: Alert = {
       ...alert,
@@ -206,7 +309,7 @@ export const useIotStore = defineStore('iot', () => {
       }
     }
 
-    const randomDevice = devices.value[Math.floor(Math.random() * devices.value.length)];
+    const randomDevice = availableDevices.value[Math.floor(Math.random() * availableDevices.value.length)];
     const randomFence = fences.value[Math.floor(Math.random() * fences.value.length)];
 
     let message = '';
@@ -269,6 +372,9 @@ export const useIotStore = defineStore('iot', () => {
       ...device,
       id,
       status: 'online',
+      visible: true,
+      canManage: true,
+      isDeleted: false,
       lastSeen: new Date().toISOString()
     };
     devices.value.push(newDevice);
@@ -769,7 +875,7 @@ export const useIotStore = defineStore('iot', () => {
   }
 
   const deviceHealthList = computed<DeviceHealth[]>(() => {
-    const healthData = devices.value.map((device) => {
+    const healthData = availableDevices.value.map((device) => {
       const historyData = generateHealthHistory(device);
       const healthScore = calculateHealthScore(device);
       const healthTrend = calculateHealthTrend(historyData);
@@ -858,8 +964,9 @@ export const useIotStore = defineStore('iot', () => {
   }
 
   return {
-    devices, fences, alerts, selectedFenceId, editMode, highlightedDeviceId,
+    devices, availableDevices, visibleDevices, fences, alerts, selectedFenceId, editMode, highlightedDeviceId,
     isRegisteringDevice, registrationLocation, groups,
+    isDeviceMultiSelectMode, selectedDeviceIds, selectedDeviceCount, lastDeviceBatchResult,
     onlineCount, offlineCount, alertDeviceCount, deviceCount, fenceCount, alertCount, selectedFence,
     avgBattery, avgTemperature, lowBatteryCount, devicesRanked, recentAlerts,
     unacknowledgedAlerts, criticalAlerts, warningAlerts, infoAlerts,
@@ -871,7 +978,10 @@ export const useIotStore = defineStore('iot', () => {
     deviceHealthList, priorityInspectionList, healthSummary, recentAbnormalRecords,
     getDeviceById, getFenceById, getGroupById, getDeviceHealth,
     acknowledgeAlert, batchAcknowledgeAlerts, acknowledgeAllAlerts,
-    setHighlightedDevice, addAlert, generateMockAlert,
+    setHighlightedDevice,
+    setDeviceMultiSelectMode, toggleDeviceSelection, selectAllDevices, clearSelectedDevices, pruneSelectedDevices,
+    batchSetDevicesVisible, batchSetDeviceGroup, clearDeviceBatchResult,
+    addAlert, generateMockAlert,
     startMockAlertStream, stopMockAlertStream,
     addFence, updateFence, deleteFence, selectFence, setEditMode,
     addDevice, startDeviceRegistration, cancelDeviceRegistration, setRegistrationLocation,

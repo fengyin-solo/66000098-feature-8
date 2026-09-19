@@ -11,7 +11,7 @@
       <span style="font-size:12px;padding:2px 8px;border-radius:12px;background:#e8f5e9">🟢 {{ store.onlineCount }} 在线</span>
       <span style="font-size:12px;padding:2px 8px;border-radius:12px;background:#ffebee">⚠️ {{ store.alertCount }} 告警</span>
     </div>
-    <div v-for="d in store.devices" :key="d.id"
+    <div v-for="d in store.availableDevices" :key="d.id"
       @click="handleDeviceClick(d.id)"
       @mouseenter="handleHover(d.id)"
       @mouseleave="handleHover(null)"
@@ -25,6 +25,10 @@
       <div style="flex:1">
         <div style="font-weight: store.highlightedDeviceId === d.id ? 700 : 500;font-size:13px;color:#333;display:flex;align-items:center;gap:6px">
           {{ d.name }}
+          <span v-if="d.visible === false"
+            :style="{ fontSize:'10px', padding:'1px 6px', borderRadius:'8px', background:'#eceff1', color:'#607d8b' }">
+            已隐藏
+          </span>
           <span v-if="d.groupId && getGroup(d.groupId)"
             :style="{ fontSize:'10px', padding:'1px 6px', borderRadius:'8px', background: getGroup(d.groupId)!.color + '20', color: getGroup(d.groupId)!.color }">
             {{ getGroup(d.groupId)!.name }}

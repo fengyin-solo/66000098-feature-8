@@ -3,7 +3,28 @@ export interface Device {
   status: 'online' | 'offline' | 'alert'; lastSeen: string;
   battery: number; temperature: number;
   groupId?: string;
+  visible?: boolean;
+  canManage?: boolean;
+  isDeleted?: boolean;
   thresholds?: DeviceThresholds;
+}
+
+export type DeviceBatchAction = 'visibility' | 'group';
+export type DeviceBatchFailureReason = 'forbidden' | 'deleted';
+
+export interface DeviceBatchFailure {
+  deviceId: string;
+  deviceName?: string;
+  reason: DeviceBatchFailureReason;
+  message: string;
+}
+
+export interface DeviceBatchResult {
+  action: DeviceBatchAction;
+  requested: number;
+  succeeded: number;
+  failed: number;
+  failures: DeviceBatchFailure[];
 }
 
 export interface DeviceThresholds {
