@@ -3,7 +3,29 @@ export interface Device {
   status: 'online' | 'offline' | 'alert'; lastSeen: string;
   battery: number; temperature: number;
   groupId?: string;
+  hidden?: boolean;
+  canEdit?: boolean;
   thresholds?: DeviceThresholds;
+}
+
+export type MarkerBatchOperationType = 'visibility' | 'group';
+export type MarkerBatchFailureReason = 'not_found' | 'forbidden';
+
+export interface MarkerBatchFailure {
+  id: string;
+  name?: string;
+  reason: MarkerBatchFailureReason;
+  message: string;
+}
+
+export interface MarkerBatchResult {
+  operation: MarkerBatchOperationType;
+  requested: number;
+  succeeded: number;
+  failed: number;
+  failures: MarkerBatchFailure[];
+  hidden?: boolean;
+  groupId?: string;
 }
 
 export interface DeviceThresholds {

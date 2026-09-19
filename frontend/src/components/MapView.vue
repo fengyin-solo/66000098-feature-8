@@ -9,6 +9,69 @@
       padding:'8px 16px', background:'#1b5e20', color:'#fff', borderRadius:'20px', fontSize:'12px', zIndex:1000, boxShadow:'0 2px 8px rgba(0,0,0,0.2)' }">
       📍 点击地图选择设备位置
     </div>
+
+    <button v-if="canUseMarkerMultiSelect"
+      @click="toggleMarkerMultiSelect"
+      :disabled="store.markerBatchLoading"
+      :style="{ position:'absolute', top:'12px', right:'12px', zIndex:1000, padding:'8px 14px', borderRadius:'20px',
+        border:'1px solid ' + (store.isMarkerMultiSelectMode ? '#1976d2' : '#fff'),
+        background: store.isMarkerMultiSelectMode ? '#e3f2fd' : 'rgba(255,255,255,0.94)',
+        color: store.isMarkerMultiSelectMode ? '#1976d2' : '#333', cursor: store.markerBatchLoading ? 'not-allowed' : 'pointer',
+        opacity: store.markerBatchLoading ? 0.65 : 1, fontSize:'12px',
+        boxShadow:'0 2px 8px rgba(0,0,0,0.18)', fontWeight:600 }">
+      {{ store.isMarkerMultiSelectMode ? '☑️ 多选标记中' : '☐ 多选标记' }}
+    </button>
+
+    <div v-if="batchResult" :style="resultCardStyle">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:12px">
+        <strong>{{ batchResult.operation === 'visibility' ? '批量显隐' : '批量调整分组' }}完成</strong>
+        <button @click="store.clearMarkerBatchResult()"
+          style="border:none;background:transparent;color:#666;cursor:pointer;font-size:14px;padding:0">×</button>
+      </div>
+      <div style="margin-top:6px">
+        请求 {{ batchResult.requested }} 项 ·
+        <span style="color:#2e7d32;font-weight:600">成功 {{ batchResult.succeeded }}</span> ·
+        <span :style="{ color: batchResult.failed ? '#c62828' : '#666', fontWeight: batchResult.failed ? 600 : 400 }">
+          失败 {{ batchResult.failed }}
+        </span>
+      </div>
+      <div v-if="batchResult.failures.length" style="margin-top:6px;font-size:11px;color:#666;line-height:1.5">
+        <div v-for="failure in visibleFailures" :key="failure.id">
+          {{ failure.name || failure.id }}：{{ failure.message }}
+        </div>
+        <div v-if="batchResult.failures.length > 3">等 {{ batchResult.failures.length }} 项失败，成功项未回滚</div>
+      </div>
+    </div>
+
+    <div v-if="store.isMarkerMultiSelectMode && canUseMarkerMultiSelect" :style="batchToolbarStyle">
+      <div style="font-weight:600;color:#1976d2;white-space:nowrap">
+        已选 {{ store.selectedDeviceCount }} 个标记
+      </div>
+      <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:center">
+        <button :disabled="!store.selectedDeviceCount || store.markerBatchLoading" @click="handleBatchVisibility(false)"
+          :style="batchButtonStyle('#1976d2')">👁 显示</button>
+        <button :disabled="!store.selectedDeviceCount || store.markerBatchLoading" @click="handleBatchVisibility(true)"
+          :style="batchButtonStyle('#607d8b')">🙈 隐藏</button>
+        <select v-model="batchGroupId" :disabled="store.markerBatchLoading"
+          style="padding:6px 8px;border:1px solid #cfd8dc;border-radius:6px;font-size:12px;background:#fff">
+          <option value="">未分组</option>
+          <option v-for="group in store.groups" :key="group.id" :value="group.id">{{ group.name }}</option>
+        </select>
+        <button :disabled="!store.selectedDeviceCount || store.markerBatchLoading" @click="handleBatchGroup"
+          :style="batchButtonStyle('#388e3c')">调整分组</button>
+      </div>
+      <div style="display:flex;gap:6px;white-space:nowrap">
+        <button @click="store.selectAllVisibleDevices()" :disabled="store.markerBatchLoading"
+          :style="smallButtonStyle">全选当前图层</button>
+        <button @click="store.clearDeviceSelection()" :disabled="store.markerBatchLoading"
+          :style="smallButtonStyle">清空选择</button>
+        <button @click="cancelMarkerMultiSelect" :disabled="store.markerBatchLoading"
+          :style="smallButtonStyle">全部取消</button>
+      </div>
+      <div v-if="store.markerBatchLoading" style="position:absolute;inset:0;background:rgba(255,255,255,0.7);border-radius:12px;display:flex;align-items:center;justify-content:center;color:#1976d2;font-size:12px;font-weight:600">
+        正在提交批量操作...
+      </div>
+    </div>
   </div>
 </template>
 
@@ -51,6 +114,90 @@ const modeHint = computed(() => {
   if (store.editMode === 'edit') return '✏️ 拖动围栏或顶点调整位置，在右侧编辑属性';
   return '';
 });
+
+const batchGroupId = ref('');
+const canUseMarkerMultiSelect = computed(() => !store.isRegisteringDevice && !store.trackPlaybackEnabled);
+const batchResult = computed(() => store.lastMarkerBatchResult);
+const visibleFailures = computed(() => batchResult.value?.failures.slice(0, 3) || []);
+
+const resultCardStyle = {
+  position: 'absolute',
+  right: '12px',
+  top: '56px',
+  zIndex: 1001,
+  minWidth: '220px',
+  maxWidth: '300px',
+  padding: '10px 12px',
+  borderRadius: '8px',
+  background: 'rgba(255,255,255,0.96)',
+  boxShadow: '0 4px 16px rgba(0,0,0,0.18)',
+  fontSize: '12px',
+  color: '#333'
+} as const;
+
+const batchToolbarStyle = {
+  position: 'absolute',
+  left: '50%',
+  bottom: '16px',
+  transform: 'translateX(-50%)',
+  zIndex: 1000,
+  display: 'flex',
+  alignItems: 'center',
+  gap: '12px',
+  padding: '10px 14px',
+  borderRadius: '12px',
+  background: 'rgba(255,255,255,0.96)',
+  boxShadow: '0 4px 18px rgba(0,0,0,0.22)',
+  fontSize: '12px',
+  maxWidth: 'calc(100% - 48px)',
+  flexWrap: 'wrap',
+  justifyContent: 'center'
+} as const;
+
+const smallButtonStyle = {
+  padding: '6px 8px',
+  border: '1px solid #cfd8dc',
+  borderRadius: '6px',
+  background: '#fff',
+  color: '#455a64',
+  cursor: 'pointer',
+  fontSize: '11px'
+} as const;
+
+function batchButtonStyle(color: string) {
+  const disabled = !store.selectedDeviceIds.length || store.markerBatchLoading;
+  return {
+    padding: '6px 10px',
+    border: `1px solid ${color}`,
+    borderRadius: '6px',
+    background: color + '12',
+    color,
+    cursor: disabled ? 'not-allowed' : 'pointer',
+    opacity: disabled ? 0.5 : 1,
+    fontSize: '12px',
+    fontWeight: 600
+  } as const;
+}
+
+function toggleMarkerMultiSelect() {
+  if (store.markerBatchLoading) return;
+  store.setMarkerMultiSelectMode(!store.isMarkerMultiSelectMode);
+}
+
+function cancelMarkerMultiSelect() {
+  if (store.markerBatchLoading) return;
+  store.setMarkerMultiSelectMode(false);
+}
+
+async function handleBatchVisibility(hidden: boolean) {
+  if (!store.selectedDeviceIds.length || store.markerBatchLoading) return;
+  await store.batchSetMarkersVisibility([...store.selectedDeviceIds], hidden);
+}
+
+async function handleBatchGroup() {
+  if (!store.selectedDeviceIds.length || store.markerBatchLoading) return;
+  await store.batchSetMarkersGroup([...store.selectedDeviceIds], batchGroupId.value || undefined);
+}
 
 const tempIcon = L.divIcon({
   className: 'custom-div-icon',
@@ -126,13 +273,17 @@ function renderFence(fence: Geofence) {
       dashArray
     });
     circle.bindPopup(`<b>${fence.name}</b><br>圆形 · ${fence.radius}m<br>${fence.alertOnEnter ? '进入告警 ' : ''}${fence.alertOnExit ? '离开告警' : ''}`);
-    circle.on('click', () => {
+    circle.on('click', (e) => {
+      if (store.isMarkerMultiSelectMode) {
+        L.DomEvent.stopPropagation(e);
+        return;
+      }
       if (store.editMode === 'none' || store.editMode === 'edit') {
         store.selectFence(fence.id);
       }
     });
     circle.on('mousedown', (e: LeafletMouseEvent) => {
-      if (store.editMode === 'edit' && isSelected) {
+      if (!store.isMarkerMultiSelectMode && store.editMode === 'edit' && isSelected) {
         handleFenceDragStart(e, fence);
       }
     });
@@ -153,13 +304,17 @@ function renderFence(fence: Geofence) {
       dashArray
     });
     polygon.bindPopup(`<b>${fence.name}</b><br>多边形 · ${fence.paths.length}点<br>${fence.alertOnEnter ? '进入告警 ' : ''}${fence.alertOnExit ? '离开告警' : ''}`);
-    polygon.on('click', () => {
+    polygon.on('click', (e) => {
+      if (store.isMarkerMultiSelectMode) {
+        L.DomEvent.stopPropagation(e);
+        return;
+      }
       if (store.editMode === 'none' || store.editMode === 'edit') {
         store.selectFence(fence.id);
       }
     });
     polygon.on('mousedown', (e: LeafletMouseEvent) => {
-      if (store.editMode === 'edit' && isSelected) {
+      if (!store.isMarkerMultiSelectMode && store.editMode === 'edit' && isSelected) {
         handleFenceDragStart(e, fence);
       }
     });
@@ -424,6 +579,10 @@ function handleMapMouseUp() {
 }
 
 function handleMapClick(e: LeafletMouseEvent) {
+  if (store.isMarkerMultiSelectMode) {
+    return;
+  }
+
   if (store.isRegisteringDevice) {
     const lat = e.latlng.lat;
     const lng = e.latlng.lng;
@@ -565,35 +724,67 @@ function renderAllDevices() {
   deviceLayers.value.clear();
 
   store.devices.forEach(d => {
-    const isHighlighted = store.highlightedDeviceId === d.id;
-    const color = d.status === 'online' ? '#4caf50' : d.status === 'alert' ? '#e53935' : '#9e9e9e';
-    const baseRadius = 8;
-    const radius = isHighlighted ? baseRadius + 6 : baseRadius;
-    const weight = isHighlighted ? 4 : 2;
+    if (d.hidden) return;
 
-    if (isHighlighted) {
+    const isHighlighted = store.highlightedDeviceId === d.id;
+    const isSelected = store.isDeviceSelected(d.id);
+    const group = d.groupId ? store.getGroupById(d.groupId) : undefined;
+    const statusColor = d.status === 'online' ? '#4caf50' : d.status === 'alert' ? '#e53935' : '#9e9e9e';
+    const color = group?.color || statusColor;
+    const baseRadius = 8;
+    const radius = isHighlighted || isSelected ? baseRadius + 4 : baseRadius;
+    const weight = isSelected ? 4 : isHighlighted ? 4 : 2;
+    const fillOpacity = d.canEdit === false ? 0.45 : isHighlighted || isSelected ? 1 : 0.8;
+
+    if (isHighlighted || isSelected) {
       const pulseMarker = L.circleMarker([d.lat, d.lng], {
         radius: radius + 8,
-        color: color,
-        fillColor: color,
-        fillOpacity: 0.2,
+        color: isSelected ? '#1976d2' : color,
+        fillColor: isSelected ? '#1976d2' : color,
+        fillOpacity: 0.12,
         weight: 2,
-        dashArray: '5,5'
+        dashArray: isSelected ? '4,3' : '5,5'
       }).addTo(map.value!);
       deviceLayers.value.set(d.id + '-pulse', pulseMarker);
     }
 
+    const popupHtml = `
+      <b>${d.name}</b>${d.canEdit === false ? ' 🔒' : ''}<br>
+      状态: ${d.status === 'online' ? '在线' : d.status === 'alert' ? '告警' : '离线'}<br>
+      分组: ${group?.name || '未分组'}<br>
+      电量: ${d.battery}%<br>
+      温度: ${d.temperature}°C
+      ${d.canEdit === false ? '<br><span style="color:#c62828;font-size:11px">无批量操作权限</span>' : ''}
+    `;
+
     const marker = L.circleMarker([d.lat, d.lng], {
       radius,
-      color,
+      color: isSelected ? '#1976d2' : color,
       fillColor: color,
-      fillOpacity: isHighlighted ? 1 : 0.8,
+      fillOpacity,
       weight
-    })
-      .addTo(map.value!)
-      .bindPopup(`<b>${d.name}</b><br>状态: ${d.status === 'online' ? '在线' : d.status === 'alert' ? '告警' : '离线'}<br>电量: ${d.battery}%<br>温度: ${d.temperature}°C`);
+    });
 
-    if (isHighlighted) {
+    if (!store.isMarkerMultiSelectMode) {
+      marker.bindPopup(popupHtml);
+    }
+
+    marker.on('click', (event: LeafletMouseEvent) => {
+      const additive = event.originalEvent.ctrlKey || event.originalEvent.metaKey || event.originalEvent.shiftKey;
+      if (store.isMarkerMultiSelectMode || additive) {
+        map.value!.closePopup();
+        if (!store.isMarkerMultiSelectMode) {
+          store.setMarkerMultiSelectMode(true);
+        }
+        store.toggleDeviceSelection(d.id);
+        L.DomEvent.stopPropagation(event);
+        return;
+      }
+      store.setHighlightedDevice(d.id);
+    });
+
+    marker.addTo(map.value!);
+    if (!store.isMarkerMultiSelectMode && isHighlighted) {
       marker.openPopup();
     }
 
@@ -837,9 +1028,29 @@ watch(() => store.devices, () => {
 }, { deep: true });
 
 watch(() => store.highlightedDeviceId, (newId, oldId) => {
-  renderAllDevices();
+  if (!store.isMarkerMultiSelectMode) {
+    renderAllDevices();
+  }
   if (newId && newId !== oldId) {
     panToDevice(newId);
+  }
+});
+
+watch(() => store.isMarkerMultiSelectMode, () => {
+  if (map.value) map.value.closePopup();
+  if (!store.isMarkerMultiSelectMode) {
+    store.clearDeviceSelection();
+  }
+  renderAllDevices();
+});
+
+watch(() => store.selectedDeviceIds, () => {
+  renderAllDevices();
+}, { deep: true });
+
+watch(canUseMarkerMultiSelect, (allowed) => {
+  if (!allowed && store.isMarkerMultiSelectMode) {
+    store.setMarkerMultiSelectMode(false);
   }
 });
 
@@ -909,11 +1120,20 @@ onMounted(() => {
   map.value.on('mousemove', handleMapMouseMove);
   map.value.on('mouseup', handleMapMouseUp);
 
+  window.addEventListener('keydown', handleKeydown);
+
   renderAllFences();
   renderAllDevices();
 });
 
+function handleKeydown(event: KeyboardEvent) {
+  if (event.key === 'Escape' && store.isMarkerMultiSelectMode) {
+    cancelMarkerMultiSelect();
+  }
+}
+
 onUnmounted(() => {
+  window.removeEventListener('keydown', handleKeydown);
   if (map.value) {
     map.value.remove();
   }

@@ -7,18 +7,25 @@
         ➕ 注册
       </button>
     </h3>
-    <div style="display:flex;gap:8px;margin-bottom:16px">
+    <div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap">
       <span style="font-size:12px;padding:2px 8px;border-radius:12px;background:#e8f5e9">🟢 {{ store.onlineCount }} 在线</span>
       <span style="font-size:12px;padding:2px 8px;border-radius:12px;background:#ffebee">⚠️ {{ store.alertCount }} 告警</span>
+      <span v-if="store.isMarkerMultiSelectMode" style="font-size:12px;padding:2px 8px;border-radius:12px;background:#e3f2fd;color:#1976d2">
+        已选 {{ store.selectedDeviceCount }}
+      </span>
     </div>
     <div v-for="d in store.devices" :key="d.id"
-      @click="handleDeviceClick(d.id)"
+      @click="handleDeviceClick(d.id, $event)"
       @mouseenter="handleHover(d.id)"
       @mouseleave="handleHover(null)"
       :style="{ display:'flex', alignItems:'center', gap:'10px', padding:'10px', marginBottom:'8px',
-        borderRadius:'8px', border:'2px solid ' + (store.highlightedDeviceId === d.id ? '#1976d2' : (d.status === 'alert' ? '#ffcc80' : '#e0e0e0')),
-        background: store.highlightedDeviceId === d.id ? '#e3f2fd' : (d.status === 'alert' ? '#fff3e0' : '#fff'),
+        borderRadius:'8px', border:'2px solid ' + rowBorderColor(d.id),
+        background: store.isDeviceSelected(d.id) ? '#e3f2fd' : (store.highlightedDeviceId === d.id ? '#f5fbff' : (d.status === 'alert' ? '#fff3e0' : '#fff')),
+        opacity: d.hidden ? 0.55 : 1,
         cursor:'pointer', transition:'all 0.2s ease' }">
+      <span v-if="store.isMarkerMultiSelectMode" style="font-size:13px;color:#1976d2;width:14px">
+        {{ store.isDeviceSelected(d.id) ? '☑️' : '⬜' }}
+      </span>
       <span :style="{ width:'10px', height:'10px', borderRadius:'50%',
         background: d.status === 'online' ? '#4caf50' : d.status === 'alert' ? '#ff9800' : '#9e9e9e',
         boxShadow: store.highlightedDeviceId === d.id ? '0 0 0 3px rgba(25,118,210,0.3)' : 'none' }"></span>
@@ -32,6 +39,8 @@
         </div>
         <div style="font-size:11px;color:#888">🔋 {{ d.battery }}% · 🌡 {{ d.temperature }}°C</div>
       </div>
+      <span v-if="d.canEdit === false" style="font-size:10px" title="无批量操作权限">🔒</span>
+      <span v-if="d.hidden" style="font-size:10px" title="地图标记已隐藏">🚫</span>
       <span v-if="d.status === 'alert'" style="font-size:10px;color:#ff9800">⚠️</span>
     </div>
   </div>
@@ -49,12 +58,26 @@ function getGroup(groupId: string) {
   return store.getGroupById(groupId);
 }
 
-function handleDeviceClick(id: string) {
+function rowBorderColor(id: string) {
+  if (store.isDeviceSelected(id)) return '#1976d2';
+  if (store.highlightedDeviceId === id) return '#90caf9';
+  const device = store.getDeviceById(id);
+  return device?.status === 'alert' ? '#ffcc80' : '#e0e0e0';
+}
+
+function handleDeviceClick(id: string, event: MouseEvent) {
+  if (store.isMarkerMultiSelectMode || event.ctrlKey || event.metaKey || event.shiftKey) {
+    if (!store.isMarkerMultiSelectMode) {
+      store.setMarkerMultiSelectMode(true);
+    }
+    store.toggleDeviceSelection(id);
+    return;
+  }
   store.setHighlightedDevice(id);
 }
 
 function handleHover(id: string | null) {
-  if (!store.highlightedDeviceId) {
+  if (!store.isMarkerMultiSelectMode && !store.highlightedDeviceId) {
     store.setHighlightedDevice(id);
   }
 }
